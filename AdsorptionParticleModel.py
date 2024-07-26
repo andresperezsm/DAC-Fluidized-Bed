@@ -419,8 +419,7 @@ plt.show()
 
 
 
-# THIS CONSIDERS THE BIOT NUMBER WHICH SHOULD BE OBTAINED FROM THE MASS TRANSFER COEFFICIENT WHICH IS DEPENDENT ON COLUMN PROPERTIES
-# TO BE IMPLEMENTED AFTER
+
 # thiele_array = np.logspace(-2,2,20)
 # Bi_m = particle.k_mt*particle.d_p/particle.Deff
 # #analytical_internal = (np.tanh(thiele_array)/thiele_array)

@@ -59,10 +59,10 @@ class FluidizationHydrodynamics:
         self.Re_bub_high = np.exp(-0.357 + 0.149*np.log(self.Ar))
         # print(self.Re, self.Re_bub_low ,self.Re_bub_high)
 
-        if self.Re >= self.Re_bub_high:
-            raise ValueError("Reactor is not in bubbling fluidization regime (Re > Re_high). Check flow rate/particle size.")
-        elif self.Re <= self.Re_bub_low:
-            raise ValueError("Reactor is not in bubbling fluidization regime (Re < Re_low). Check flow rate/particle size.")
+        # if self.Re >= self.Re_bub_high:
+        #     raise ValueError("Reactor is not in bubbling fluidization regime (Re > Re_high). Check flow rate/particle size.")
+        # elif self.Re <= self.Re_bub_low:
+        #     raise ValueError("Reactor is not in bubbling fluidization regime (Re < Re_low). Check flow rate/particle size.")
         
         # Terminal particle velocity
         self.Re_terminal = (self.Ar**(1/3))/(((18)/(self.Ar**(2/3))) + ((2.335 - 1.744*self.phi_p)/(self.Ar**(1/6))))

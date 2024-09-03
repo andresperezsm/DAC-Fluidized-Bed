@@ -41,11 +41,11 @@ class FluidizationHydrodynamics:
 
         if self.Ar <= self.Ar_AB :
             self.particletype = 'Particle is Geldart A'
-            print(self.Ar,'Particle is Geldart A type')
+            # print(self.Ar,'Particle is Geldart A type')
 
         elif self.Ar <= self.Ar_BD :
             self.particletype = 'Particle is Geldart B'
-            print(self.Ar,'Particle is Geldart B type')
+            # print(self.Ar,'Particle is Geldart B type')
 
         else:
             raise ValueError("Particle is D type. Check Lewatit properties.")
@@ -73,9 +73,10 @@ class FluidizationHydrodynamics:
         self.T0 = 298
         self.epsilon_mf = 0.382*(((self.Ar**(-0.196))*((self.rho_s/self.rho_g)**(-0.143))) + 1)*((self.T/self.T0)**(0.083))
         #[self.Re_mf, self.u_mf] = solve_umf(self.d_p)
-        self.Re_mf = np.sqrt((33.7**2 + 0.408*self.Ar)) - 37 # From KL
-        self.u_mf = (self.Re_mf*self.mu_g)/(self.rho_g*self.d_p)
+        self.Re_mf = 33.7*(np.sqrt(1 + 3.6*(1e-5)*self.Ar) - 1)#np.sqrt((33.7**2 + 0.408*self.Ar)) - 37 # From KL
 
+        """ LATEST CHANGE IS USING A CONSTANT VALUE since Re_mf is negative"""
+        self.u_mf =(self.Re_mf*self.mu_g)/(self.rho_g*self.d_p) # 0.0126 # 
         self.d_h = self.Dr # Hydraulic diameter of the column
 
         # The following are two options for the bubble diameter correlation
@@ -87,12 +88,13 @@ class FluidizationHydrodynamics:
 
         # Perforated plate
         Ac = 55e-6 # Size of the perforated holes from KL
-        nd = 100
+        nd = 10
         self.db0_perforated = 0.347 * ((Ac * (self.u0 - self.u_mf) / nd) ** 0.4)
 
         self.d_b_func_1 = 0.138*(self.z**0.8)*((self.u0 - self.u_mf)**0.42)*np.exp(((self.u0 - self.u_mf)**2)*(-0.25/(10**5)) - ((self.u0 - self.u_mf)/(10**3)))
         # print(db0_porous,db0_perforated)
-        self.d_b = np.maximum(self.d_b_func_1, self.db0_porous)
+        # CHANGED DB0_POROUS TO 0.005
+        self.d_b = np.maximum(self.d_b_func_1, 0.005)
 
 
         """ OPTION 2"""
@@ -127,24 +129,24 @@ class FluidizationHydrodynamics:
         ## Maxwell-Stefan constants
         #Molecular weights 
         self.M_CO2 = 44  # 1 
-        self.M_N2 = 2    # 2
-        self.M_O2 = 32  # 3
-        self.M_Ar = 39.95  # 4
+        self.M_CO = 2    # 2
+        self.M_H2O = 32  # 3
+        self.M_H2 = 39.95  # 4
 
         #Diffusion volumes
         self.V_CO2 = 26.7 
-        self.V_N2 = 6.12
-        self.V_O2 = 16.3 
-        self.V_Ar = 16.2
+        self.V_CO = 6.12
+        self.V_H2O = 16.3 
+        self.V_H2 = 16.2
 
-        self.Dm_CO2, self.Dm_N2, self.Dm_O2, self.Dm_Ar = self.calculate_average_diffusion_coefficients(self.Tin, self.P)
+        self.Dm_CO2, self.Dm_CO, self.Dm_H2O, self.Dm_H2 = self.calculate_average_diffusion_coefficients(self.Tin, self.P)
         
         self.kgs = self.k_gas_to_solid(correlation='Gunn')
 
         # print(self.u_b, self.d_b,self.Dm_CO2,self.Dm_N2,self.kgs)
 
         # self.Darray = np.array([self.Dm_CO2, self.Dm_N2, self.Dm_O2, self.Dm_Ar]) 
-        self.Darray = np.array([self.Dm_CO2, self.Dm_N2])
+        self.Darray = np.array([self.Dm_CO2, self.Dm_CO, self.Dm_H2O, self.Dm_H2])
         
         self.Kbc = np.zeros([self.nz, np.size(self.Darray)])
         self.Kce = np.zeros([self.nz, np.size(self.Darray)])
@@ -173,7 +175,9 @@ class FluidizationHydrodynamics:
                 raise ValueError("Paricle is D or C type. Spouting and jet formation is undesired, therefore, check Lewatit CP 1065 properties.")
             
         if self.particletype == 'Particle is Geldart A':
-            self.kgas = np.array([self.Kbc, self.Kce])
+            # self.kgas = np.array([self.Kbc, self.Kce])
+            self.kgas[0,:,:] = self.Kbc[:,:]
+            self.kgas[1,:,:] = self.Kce[:,:]
         elif self.particletype == 'Particle is Geldart B':
             self.kgas[0,:,:] = self.Kbc[:,:]
             self.kgas[1,:,:] = self.Kce[:,:]
@@ -209,18 +213,18 @@ class FluidizationHydrodynamics:
 
         # Cloud fraction 
         # There are two correlations for the cloud fraction per bubble volume. The following is from Medrano et al.
-        self.RcRb = np.minimum(np.maximum(((self.u_br + 2*self.u_f)/(self.u_br - self.u_f)), 0), 1 - self.fb - self.fw)
-        self.alpha_c = (self.RcRb)**3 - 1
-        self.fc = self.alpha_c*self.fb # From Medrano et. al
-        # print(self.fw,self.fb, self.alpha_c)
+        # self.RcRb = np.minimum(np.maximum(((self.u_br + 2*self.u_f)/(self.u_br - self.u_f)), 0), 1 - self.fb - self.fw)
+        # self.alpha_c = (self.RcRb)**3 - 1
+        # self.fc = self.alpha_c*self.fb # From Medrano et. al
+        # print(self.RcRb, self.alpha_c)
 
         # The following option is from KL
-        # self.fc = 3/((self.u_br*self.epsilon_mf - self.u_mf)/self.u_mf)
-        self.epsilon_cloud = self.fc*self.fb
+        self.fc = 3/((self.u_br*self.epsilon_mf - self.u_mf)/self.u_mf)
+        self.epsilon_cloud_wake = (self.fc + self.fw)*self.fb
 
         # Emulsion fraction 
-        self.femulsion = (1 - self.fb)/self.fb # - self.fc - self.fw
-        self.epsilon_emulsion = self.femulsion*self.fb # To obtain units per m3 of reactor volume
+        self.femulsion = (1 - self.fb - self.fb*self.fc - self.fb*self.fw)/self.fb #  - self.epsilon_cloud_wake
+        self.epsilon_emulsion = self.femulsion #*self.fb # To obtain units per m3 of reactor volume
 
         """ # THIS ONE IS NOT ACCURATE """
         self.femulsion2 = (1 - self.fb - (self.fb*self.fc*self.fb*self.fw))/self.fb
@@ -254,9 +258,9 @@ class FluidizationHydrodynamics:
         # Define the molecules and their properties
         molecules = [
             ('CO2', self.M_CO2, self.V_CO2),
-            ('N2', self.M_N2, self.V_N2),
-            ('O2', self.M_O2, self.V_O2),
-            ('Ar', self.M_Ar, self.V_Ar)
+            ('CO', self.M_CO, self.V_CO),
+            ('H2O', self.M_H2O, self.V_H2O),
+            ('H2', self.M_H2, self.V_H2)
         ]
         
         # Calculate diffusion coefficients for each molecule with every other molecule
@@ -272,12 +276,16 @@ class FluidizationHydrodynamics:
         avg_diffusion_coeffs = {name: np.mean(coeffs) for name, coeffs in diffusion_coeffs.items()}
         # print(f"Average Diffusion Coefficients: {avg_diffusion_coeffs}")
         
-        return avg_diffusion_coeffs['CO2'], avg_diffusion_coeffs['N2'], avg_diffusion_coeffs['O2'], avg_diffusion_coeffs['Ar']
+        return avg_diffusion_coeffs['CO2'], avg_diffusion_coeffs['CO'], avg_diffusion_coeffs['H2O'], avg_diffusion_coeffs['H2']
 
     
     def k_gas_to_solid(self, correlation='Gunn'):
-        pairs = [(self.M_CO2, self.M_O2, self.V_CO2, self.V_O2),    # 12
-                    (self.M_N2, self.M_O2, self.V_N2, self.V_O2)]    # 13
+        pairs = [(self.M_CO2, self.M_H2, self.V_CO2, self.V_H2),    # 12
+                    (self.M_CO2, self.M_CO, self.V_CO2, self.V_CO),    # 13
+                    (self.M_CO2, self.M_H2O, self.V_CO2, self.V_H2O),  # 14
+                    (self.M_H2, self.M_CO, self.V_H2, self.V_CO),      # 23
+                    (self.M_H2, self.M_H2O, self.V_H2, self.V_H2O),    # 24
+                    (self.M_CO, self.M_H2O, self.V_CO, self.V_H2O)]    # 34
         
         k_gs = []
         

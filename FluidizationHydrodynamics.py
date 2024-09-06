@@ -6,7 +6,7 @@ import scipy.optimize as opt
 # from UmfClass import solve_umf
 
 class FluidizationHydrodynamics:
-    def init(self, d_p, u0, nz):
+    def init(self, d_p, u0, nz, rho_s):
         # Reactor properties
         self.Tin = 298
         self.P = 1*101325 
@@ -27,7 +27,7 @@ class FluidizationHydrodynamics:
 
         # Particle phase properties from (Low 2023)
         self.d_p =  d_p # Lewatit VP OC 1065
-        self.rho_s = 744 # Particle density (kg/m3)
+        self.rho_s = rho_s # 744 # Particle density (kg/m3)
         self.epsilon_s = 0.338 # Particle porosity (-)
         self.phi_p = 1 # Particle sphericity assumed to be 1 
         self.tauw = 2 # Particle tortuosity
@@ -73,10 +73,8 @@ class FluidizationHydrodynamics:
         self.T0 = 298
         self.epsilon_mf = 0.382*(((self.Ar**(-0.196))*((self.rho_s/self.rho_g)**(-0.143))) + 1)*((self.T/self.T0)**(0.083))
         #[self.Re_mf, self.u_mf] = solve_umf(self.d_p)
-        self.Re_mf = 33.7*(np.sqrt(1 + 3.6*(1e-5)*self.Ar) - 1)#np.sqrt((33.7**2 + 0.408*self.Ar)) - 37 # From KL
-
-        """ LATEST CHANGE IS USING A CONSTANT VALUE since Re_mf is negative"""
-        self.u_mf =(self.Re_mf*self.mu_g)/(self.rho_g*self.d_p) # 0.0126 # 
+        self.Re_mf = 33.7*(np.sqrt(1 + 3.6*(1e-5)*self.Ar) - 1) #np.sqrt((33.7**2 + 0.408*self.Ar)) - 37 # From KL
+        self.u_mf = (self.Re_mf*self.mu_g)/(self.rho_g*self.d_p) # 0.0126 # 
         self.d_h = self.Dr # Hydraulic diameter of the column
 
         # The following are two options for the bubble diameter correlation
@@ -120,11 +118,13 @@ class FluidizationHydrodynamics:
 
         # Bubble velocity
         # # First option specific for different types
-        # u_b_type_A = 1.55*((Dt)**(0.32))*((u0 - u_mf) + 14.1*(d_b_func_FIRST_OPTION + 0.005))+ u_br # For Geldart A
-        self.u_b_1 = 1.6*((self.Dr)**(1.35))*((self.u0 - self.u_mf) + 1.13*(self.d_b**(0.5))) + self.u_br # For Geldart B
+        if self.particletype == 'Particle is Geldart A':
+            self.u_b_1= 1.55*((self.Dr)**(0.32))*((self.u0 - self.u_mf) + 14.1*(self.d_b + 0.005))+ self.u_br # For Geldart A
+        elif self.particletype == 'Particle is Geldart B':
+            self.u_b_1 = 1.6*((self.Dr)**(1.35))*((self.u0 - self.u_mf) + 1.13*(self.d_b**(0.5))) + self.u_br # For Geldart B
 
+        # Second option is a general equation for both Geldart A and Geldart B
         self.u_b = self.u0 - self.u_mf + self.u_br # 
-        # print(self.d_b,self.u_b)
 
         ## Maxwell-Stefan constants
         #Molecular weights 
@@ -142,8 +142,6 @@ class FluidizationHydrodynamics:
         self.Dm_CO2, self.Dm_CO, self.Dm_H2O, self.Dm_H2 = self.calculate_average_diffusion_coefficients(self.Tin, self.P)
         
         self.kgs = self.k_gas_to_solid(correlation='Gunn')
-
-        # print(self.u_b, self.d_b,self.Dm_CO2,self.Dm_N2,self.kgs)
 
         # self.Darray = np.array([self.Dm_CO2, self.Dm_N2, self.Dm_O2, self.Dm_Ar]) 
         self.Darray = np.array([self.Dm_CO2, self.Dm_CO, self.Dm_H2O, self.Dm_H2])
@@ -187,6 +185,7 @@ class FluidizationHydrodynamics:
         self.u_f = self.u_mf/self.epsilon_mf # Interstitial gas velocity at minimum fluidization
 
         self.fb = np.zeros_like(self.u_b)
+        self.fb_2 = np.zeros_like(self.u_b_1)
 
         # Bubble phase fraction
         for i in range(np.size(self.u_b)):
@@ -204,13 +203,73 @@ class FluidizationHydrodynamics:
 
             else:
                 raise ValueError("The bubble to emulsion velocity ratio is out of correlation bounds. Check superficial (self.u0) and minimum fluidization velocity (self.u_mf)")
-            
+        
             self.fb[i] = (self.u0 - self.u_mf)/(self.u_b[i] + self.psi*self.u_mf)
 
-        # Wake fraction inside of Bubble
-        self.alpha_w = 1 - np.exp(-4.92*self.d_b)
-        self.fw = self.alpha_w*self.fb
+        # Bubble phase fraction # Second option specific for Geldart A or B
+        for i in range(np.size(self.u_b_1)):
+            if (self.u_b_1[i]/self.u_f) <= 1:
+                self.psi = 2
 
+            elif (self.u_b_1[i]/self.u_f) == 1:
+                self.psi = 1
+            
+            elif (self.u_b_1[i]/self.u_f) <= 5:
+                self.psi = 0
+
+            elif (self.u_b_1[i]/self.u_f) >= 5:
+                self.psi = -1
+
+            else:
+                raise ValueError("The bubble to emulsion velocity ratio is out of correlation bounds. Check superficial (self.u0) and minimum fluidization velocity (self.u_mf)")
+        
+            self.fb_2[i] = (self.u0 - self.u_mf)/(self.u_b_1[i] + self.psi*self.u_mf)
+
+        if self.particletype == 'Particle is Geldart A':
+            # Wake fraction inside of Bubble
+            self.alpha_w = 1 - np.exp(-4.92*self.d_b) # From Medrano
+            self.fw = self.alpha_w*self.fb
+            self.fc = 3/((self.u_br*self.epsilon_mf - self.u_mf)/self.u_mf) # From K&L
+
+            # CW fraction
+            self.epsilon_cloud_wake = (self.fc + self.fw)*self.fb
+
+             # Emulsion fraction 
+            self.femulsion = (1 - self.fb - self.fw)/self.fb #  - self.fb*self.fc  - self.fb*self.fw This equation was obtained from Medrano
+            # self.femulsion2 = (1 - self.fb - (self.fb*self.fc*self.fb*self.fw))/self.fb # This equation was obtained from K&L
+            self.epsilon_emulsion = self.femulsion*self.fb # To obtain units per m3 of reactor volume
+        
+            # Alternative to emulsion phase velocity from KL
+            self.us_wake = self.u_b
+            self.us_down = (self.fw*self.fb*self.u_b)/(1 - self.fb - self.fb*self.fw) 
+
+            # self.u_emulsion2 = ((self.u_mf)/(self.epsilon_mf)) - self.us_down # from K&L
+            self.u_emulsion = (self.u0 - (((self.fb) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
+
+            # Solid phase fractions per unit of bubble volume
+            self.gamma_b = 0.005
+            self.gamma_cw = (1 - self.epsilon_mf)*(self.fc + self.fw) # This one is from KL the alternative is the following (1 - self.epsilon_mf)*(self.fc + 0.5) 
+            self.gamma_e = (1 - self.epsilon_mf)*((1 - self.fb)/self.fb) - self.gamma_b - self.gamma_cw
+
+            self.epsilon_solids = self.gamma_b*self.fb + self.gamma_cw*self.epsilon_cloud_wake + self.gamma_e*self.epsilon_emulsion
+
+        elif self.particletype == 'Particle is Geldart B':
+            self.femulsion = (1 - self.fb)/self.fb # This equation was obtained from Medrano
+            self.epsilon_emulsion = self.femulsion*self.fb # To obtain units per m3 of reactor volume
+
+            # Solid phase fractions per unit of bubble volume
+            self.gamma_b = 0.005 # Assumed value based on Medrano
+            self.gamma_e = (1 - self.epsilon_mf)*((1 - self.fb)/self.fb) - self.gamma_b
+            self.epsilon_solids = self.gamma_b*self.fb + self.gamma_e*self.epsilon_emulsion
+
+            self.u_emulsion = (self.u0 - ((self.fb*self.u_b)))/(self.femulsion*self.epsilon_mf)
+            self.us_down = self.u_emulsion
+            self.fw = np.zeros(self.nz) # No wake
+            self.fc = np.zeros(self.nz) # No cloud
+            
+        else:
+            raise ValueError('Check particle specifications. Geldart type is out of bounds')
+        
         # Cloud fraction 
         # There are two correlations for the cloud fraction per bubble volume. The following is from Medrano et al.
         # self.RcRb = np.minimum(np.maximum(((self.u_br + 2*self.u_f)/(self.u_br - self.u_f)), 0), 1 - self.fb - self.fw)
@@ -218,31 +277,11 @@ class FluidizationHydrodynamics:
         # self.fc = self.alpha_c*self.fb # From Medrano et. al
         # print(self.RcRb, self.alpha_c)
 
-        # The following option is from KL
-        self.fc = 3/((self.u_br*self.epsilon_mf - self.u_mf)/self.u_mf)
-        self.epsilon_cloud_wake = (self.fc + self.fw)*self.fb
-
-        # Emulsion fraction 
-        self.femulsion = (1 - self.fb - self.fb*self.fc - self.fb*self.fw)/self.fb #  - self.epsilon_cloud_wake
-        self.epsilon_emulsion = self.femulsion #*self.fb # To obtain units per m3 of reactor volume
-
-        """ # THIS ONE IS NOT ACCURATE """
-        self.femulsion2 = (1 - self.fb - (self.fb*self.fc*self.fb*self.fw))/self.fb
-
-        # Alternative to emulsion phase velocity from KL
-        self.us_wake = self.u_b
-        self.us_down = (self.fw*self.fb*self.u_b)/(1 - self.fb - self.fb*self.fw) 
-        self.u_emulsion2 = ((self.u_mf)/(self.epsilon_mf)) - self.us_down
-
         # Emulsion phase velocity from Martin
-        self.u_emulsion = (self.u0 - (((self.fb*(1 - self.epsilon_s)) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
-
+        # self.u_emulsion = (self.u0 - (((self.fb*(1 - self.epsilon_s)) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
+        # Emulsion phase velocity from Medrano
+        # self.u_emulsion = (self.u0 - (((self.fb) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
         # print(self.u_emulsion, self.u_emulsion2)
-
-        # Solid phase fractions per unit of bubble volume
-        self.gamma_b = 0.005
-        self.gamma_cw = (1 - self.epsilon_mf)*(self.fc + self.fw) # This one is from KL the alternative is the following (1 - self.epsilon_mf)*(self.fc + 0.5) 
-        self.gamma_e = (1 - self.epsilon_mf)*((1 - self.fb)/self.fb) - self.gamma_b - self.gamma_cw
 
         # Solid axial dispersion from KL
         self.Dsv = ((self.fw**2)*self.epsilon_mf*self.fb*self.d_b*(self.u_b**2))/(3*self.u_mf)
@@ -286,7 +325,6 @@ class FluidizationHydrodynamics:
                     (self.M_H2, self.M_CO, self.V_H2, self.V_CO),      # 23
                     (self.M_H2, self.M_H2O, self.V_H2, self.V_H2O),    # 24
                     (self.M_CO, self.M_H2O, self.V_CO, self.V_H2O)]    # 34
-        
         k_gs = []
         
         for M_i, M_j, V_i, V_j in pairs:

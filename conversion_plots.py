@@ -94,7 +94,7 @@ experimental_data = [
 
 Lr = 1.2 # Reactor length
 Dr = 35e-3 # 35e-3 # Diameter
-d_p = 300e-6
+d_p = 3e-5# Real particle size is! 300e-6
 Nodes = 100
 rho_s = 1137
 
@@ -150,6 +150,80 @@ plt.show()
 
 
 
+
+
+
+""" EXPERIMENTAL geldart B conversion"""
+# # Steam to CO ratio of 2.5
+H2O_CO_ratio = 2.5
+X_CO_in = 1/ (1 + H2O_CO_ratio)
+Temps = [273.15 + 180 ,273.15 + 200, 273.15 + 220, 273.15 + 300, 273.15 + 350, 273.15 + 400]
+
+# Experimental Data
+experimental_data = [
+    [0.398, 0.214, 0.169, 0.146, 0.114, 0.103],  # experimental_1
+    [0.474, 0.269, 0.213, 0.176, 0.114, 0.061], # experimental_2
+    [0.623, 0.415, 0.418, 0.321, 0.3014, 0.279], # experimental_3
+    [0.868, 0.83, 0.742, 0.6321, 0.5211, 0.447], # experimental_4
+    [0.833, 0.731, 0.621, 0.535, 0.516, 0.384], # experimental_5
+    [0.755, 0.744, 0.703, 0.669, 0.617, 0.577] # experimental_6
+]
+
+Lr = 1.2 # Reactor length
+Dr = 35e-3 # 35e-3 # Diameter
+d_p = 3e-5# Real particle size is! 300e-6
+Nodes = 100
+rho_s = 1137
+
+GHSV = np.array([800,1600,2400,3200,4000,4800])
+V_reactor = np.pi*Lr*Dr*Dr/4
+Vels = (GHSV*V_reactor/(np.pi*Dr*Dr/4))/3600 #
+print(Vels)
+# Vels = [0.2, 0.25, 0.5, 0.75, 1, 1.25] # 1.5
+
+# Initialize the model
+model = FluidizationHydrodynamics()
+model.init(d_p, Vels[0], Nodes, rho_s)
+print(model.u_mf, model.particletype)
+
+fig, ax = plt.subplots(3, 2, figsize=(15, 10))
+plot_index = 0
+
+for i, Temp in enumerate(Temps):
+    Velocity = []
+    Conversion_CO = []
+    Fraction_H2 = []
+    Fraction_CO = []
+    
+    row = plot_index // 2
+    col = plot_index % 2
+    
+    for Vel in Vels:
+        reactor = geldart_A_WGS(Nodes, d_p, rho_s, Lr, Dr, np.inf, Vel, X_CO_in, Temp, 30*101325, c_dependent_diffusion=True, plot=False)
+        reactor.solve()
+        Conversion_CO.append(reactor.Conversion_CO)
+        Fraction_H2.append(reactor.Fraction_H2)
+        Fraction_CO.append(reactor.Fraction_CO)
+        Velocity.append(Vel)
+    
+    # Plot model results
+    ax[row, col].plot(Velocity, Conversion_CO, 'o-', label='CO Conversion - Model')
+    
+    # Plot corresponding experimental data
+    experimental_i = experimental_data[i]  # Use the correct experimental data for the current temperature
+    ax[row, col].plot(Vels, experimental_i, 'x-', label='CO Conversion - Experimental')
+    
+    ax[row, col].set_xlabel('Velocity [m/s]') 
+    ax[row, col].set_ylabel('Conversion [-]') 
+    ax[row, col].set_title(f'Geldart A - WGS Conversion at {Temp:.2f} K')
+    ax[row, col].grid()
+    ax[row, col].legend()
+    ax[row,col].set_ylim((0, 0.9))
+
+    plot_index += 1
+
+plt.tight_layout()
+plt.show()
 
 
 

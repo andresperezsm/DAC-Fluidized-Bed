@@ -9,12 +9,12 @@ import time
 from FluidizationHydrodynamics import *
 
 class geldart_A_WGS: 
-    def __init__(self,Nodes, d_p, Lr, dt, gas_velocity, X_CO_in, T_in, P_in,c_dependent_diffusion=False, plot=False):
+    def __init__(self,Nodes, d_p, rho_s, Lr, Dr, dt, gas_velocity, X_CO_in, T_in, P_in,c_dependent_diffusion=False, plot=False):
         # Inlet conditions:
         self.T_in = T_in # Inlet temperature [K]
         self.P_in = P_in # Inlet pressure [Pa]
         self.R_gas = 8.314 # Gas constant [J/mol/K]
-
+        self.g = 9.81
         self.plotting = plot 
 
         # Initial concentrations
@@ -38,7 +38,7 @@ class geldart_A_WGS:
         self.Nph = 4 # Number of phases
         
         self.L_R = Lr # Reactor length [m]
-        self.D_R = 0.035 # 0.5 # Reactor diameter [m]
+        self.D_R = Dr #  0.035 # 0.5 # Reactor diameter [m]
         
         self.t_end = 10 # 10*self.L_R/gas_velocity # factor of 1.5 was used before
         
@@ -76,8 +76,7 @@ class geldart_A_WGS:
         self.Cp_s = 880 # Al2O3 support heat capacity # Lewatit ((-3.23e4)/(self.T_in**2) + (0.00227)*(self.T_in) - (-0.994))*(10**3) # Heat capacity 
         self.Dax_s = 0.0
         self.eps_b = 0.4438 # Packing in the bed at minimum fluidization -> should be epsilon_mf from FluidizationHydrodynamics
-        self.eps_s = 0.338 # Porosity of the Lewatit particle
-        self.eps_mf = 0.4438
+        self.eps_s = rho_s #  0.338 # Porosity of the Lewatit particle
         self.tauw = np.sqrt(2)
         self.d_pore = 25e-9 # Average pore diameter of the Lewatit particle 
         
@@ -105,14 +104,16 @@ class geldart_A_WGS:
 
         # Fluidization hydrodynamics
         model = FluidizationHydrodynamics()
-        model.init(d_p, gas_velocity, Nodes)
+        model.init(d_p, gas_velocity, Nodes, rho_s)
         # z = model.z
 
         # Phase fractions varying along the axial direction
         self.epsilon_cw = model.epsilon_cloud_wake
+        self.fcw = model.fc + model.fw
         self.epsilon_bubble = model.fb
         self.epsilon_emulsion = model.femulsion*model.fb
-        self.epsilon_solids = model.epsilon_solids
+        # self.epsilon_solids = model.epsilon_solids
+        self.eps_mf = model.epsilon_mf
 
         # print(self.epsilon_emulsion)
         # The solid phase fractions (gamma) should be defined in the Fluidization Hydrodynamics
@@ -132,31 +133,31 @@ class geldart_A_WGS:
         self.kgs = model.kgs
 
         # kgas[Reactor Position, Coefficient type (Kbc, Kce, Kbe, Kov),Component Index]
-        if model.particletype == 'Particle is Geldart A':
-            # Bubble to cloud transfer coefficients
-            self.Kbc_CO2 = model.kgas[0,:,0]
-            self.Kbc_CO = model.kgas[0,:,1]
-            self.Kbc_H2 = model.kgas[0,:,2]
-            self.Kbc_H2O = model.kgas[0,:,3]
+        # if model.particletype == 'Particle is Geldart A':
+        # Bubble to cloud transfer coefficients
+        self.Kbc_CO2 = model.kgas[0,:,0]
+        self.Kbc_CO = model.kgas[0,:,1]
+        self.Kbc_H2 = model.kgas[0,:,2]
+        self.Kbc_H2O = model.kgas[0,:,3]
 
-            # Cloud to emulsion transfer coefficients
-            self.Kce_CO2 = model.kgas[1,:,0]
-            self.Kce_CO= model.kgas[1,:,1]
-            self.Kce_H2 = model.kgas[1,:,2]
-            self.Kce_H2O = model.kgas[1,:,3]
+        # Cloud to emulsion transfer coefficients
+        self.Kce_CO2 = model.kgas[1,:,0]
+        self.Kce_CO= model.kgas[1,:,1]
+        self.Kce_H2 = model.kgas[1,:,2]
+        self.Kce_H2O = model.kgas[1,:,3]
 
-        elif model.particletype == 'Particle is Geldart B':
-            # Bubble to cloud transfer coefficients
-            self.Kbc_CO2 = model.kgas[0,:,0]
-            self.Kbc_CO = model.kgas[0,:,1]
-            self.Kbc_H2 = model.kgas[0,:,2]
-            self.Kbc_H2O = model.kgas[0,:,3]
+        # elif model.particletype == 'Particle is Geldart B':
+        #     # Bubble to cloud transfer coefficients
+        #     self.Kbc_CO2 = model.kgas[0,:,0]
+        #     self.Kbc_CO = model.kgas[0,:,1]
+        #     self.Kbc_H2 = model.kgas[0,:,2]
+        #     self.Kbc_H2O = model.kgas[0,:,3]
 
-            # Cloud to emulsion transfer coefficients
-            self.Kce_CO2 = model.kgas[1,:,0]
-            self.Kce_CO = model.kgas[1,:,1]
-            self.Kce_H2 = model.kgas[1,:,2]
-            self.Kce_H2O = model.kgas[1,:,3]
+        #     # Cloud to emulsion transfer coefficients
+        #     self.Kce_CO2 = model.kgas[1,:,0]
+        #     self.Kce_CO = model.kgas[1,:,1]
+        #     self.Kce_H2 = model.kgas[1,:,2]
+        #     self.Kce_H2O = model.kgas[1,:,3]
 
         # Bubble diameter profile along the column
         self.db = model.d_b
@@ -201,7 +202,8 @@ class geldart_A_WGS:
         self.k_gs = np.array([self.k_gs_CO2, self.k_gs_H2, self.k_gs_CO, self.k_gs_H2O, self.h_gs])
 
         self.u_s = (model.fw[0]*model.fb[0]*model.u_b[0])/(1 - model.fb[0] - model.fw[0]*model.fb[0]) # Solid velocities downwards
-        self.vel = np.concatenate([np.ones(self.Nc)*self.u_g, np.ones(self.Nc)*self.u_mf, np.ones(self.Nc)*self.u_mf, np.ones(self.Nc)*self.u_s,[1]])
+
+        self.vel = np.concatenate([np.ones(self.Nc)*self.ub[0], np.ones(self.Nc)*self.ub[0], np.ones(self.Nc)*self.ue[0], np.ones(self.Nc)*self.u_s,[1]])
         # self.vel = np.concatenate([np.ones(self.Nc)*self.u_g, np.ones(self.Nc)*self.u_mf, np.ones(self.Nc)*self.u_mf, np.ones(self.Nc)*self.u_s,[1]])
 
         if dt == np.inf: 
@@ -295,30 +297,30 @@ class geldart_A_WGS:
         return k_mt
 
     def calculate_mass_transfer_fluidized(self, D_i, Sc_i):
-        self.g = 9.81
-        self.u_mf = 0.014
+        # self.g = 9.81
+        # self.u_mf = 0.014
 
-        self.d_b0 = 0.376*((self.u_g - self.u_mf)**2)
-        self.A_R = np.pi*(self.D_R**2)/4 # Area of the reactor
-        self.d_b_max = np.minimum(0.65*((self.A_R*(self.u_g - self.u_mf)**(0.4))), self.D_R)
+        # self.d_b0 = 0.376*((self.u_g - self.u_mf)**2)
+        # self.A_R = np.pi*(self.D_R**2)/4 # Area of the reactor
+        # self.d_b_max = np.minimum(0.65*((self.A_R*(self.u_g - self.u_mf)**(0.4))), self.D_R)
 
-        self.H_mf = self.H_r*((1 - 0.4)/(1-0.42))
+        # self.H_mf = self.H_r*((1 - 0.4)/(1-0.42))
 
-        # Average values taken in the middle of the column
-        self.d_b_avg = self.d_b_max - (self.d_b_max - self.d_b0)*(np.exp(-(0.15*self.H_r)/(self.D_R)))
-        self.u_b_avg = self.u_g - self.u_mf + 0.711*(self.g*self.d_b_avg)
-        self.u_br = 0.711*((self.g*self.d_b_avg)) #0.711*(np.sqrt(self.g*self.d_b_avg))
+        # # Average values taken in the middle of the column
+        # self.d_b_avg = self.d_b_max - (self.d_b_max - self.d_b0)*(np.exp(-(0.15*self.H_r)/(self.D_R)))
+        # self.u_b_avg = self.u_g - self.u_mf + 0.711*(self.g*self.d_b_avg)
+        # self.u_br = 0.711*((self.g*self.d_b_avg)) #0.711*(np.sqrt(self.g*self.d_b_avg))
 
-        # Phase fractions per m3 of bubble volume
-        self.fb = (self.u_g - self.u_mf)/self.u_b_avg
-        self.fcw = 3*self.fb*(self.u_mf/self.eps_mf)/((0.711*(self.g*self.d_b_avg)) - (self.u_mf/self.eps_mf))
-        self.femulsion = 1 - self.fb - self.fcw*self.fb
+        # # Phase fractions per m3 of bubble volume
+        # self.fb = (self.u_g - self.u_mf)/self.u_b_avg
+        # self.fcw = 3*self.fb*(self.u_mf/self.eps_mf)/((0.711*(self.g*self.d_b_avg)) - (self.u_mf/self.eps_mf))
+        # self.femulsion = 1 - self.fb - self.fcw*self.fb
 
-        # Define phase fractions assumed constant
-        self.eps_bubble = self.fb 
-        self.eps_cw =  self.fcw*self.fb
-        self.eps_emulsion =  self.femulsion*self.fb 
-        self.eps_solids = (self.fcw + self.femulsion)*(1 - self.eps_mf)
+        # # Define phase fractions assumed constant
+        # self.eps_bubble = self.fb 
+        # self.eps_cw =  self.fcw*self.fb
+        # self.eps_emulsion =  self.femulsion*self.fb 
+        # self.eps_solids = (self.fcw + self.femulsion)*(1 - self.eps_mf)
 
         # print(self.eps_bubble + self.eps_cw + self.eps_emulsion)
 
@@ -335,17 +337,17 @@ class geldart_A_WGS:
         # self.gamma_emulsion  = 1 - self.eps_mf
 
         # Define specific surface areas in m3 per reactor volume
-        self.a_bubble = (6/(self.db))*self.eps_bubble #(6/(self.d_b_avg))*self.eps_bubble
-        self.a_gs = (6/self.d_p)*(1-self.eps_mf)
+        self.a_bubble = (6/(self.db))# *self.epsilon_bubble #(6/(self.d_b_avg))*self.eps_bubble
+        self.a_gs = (6/self.d_p) # *(1-self.eps_mf)
 
         # Bubble to cloud
-        k_bc = 4.5*(self.u_mf/self.d_b_avg) + 5.85*(((D_i**(1/2))*(self.g**(1/4)))/(self.d_b_avg**(5/4)))
+        k_bc = 4.5*(self.umf/self.db) + 5.85*(((D_i**(1/2))*(self.g**(1/4)))/(self.db**(5/4)))
         
         # Cloud to emulsion
-        k_ce = 13.56*((D_i*self.eps_mf*self.u_b_avg/(self.d_b_avg**3))**(1/2))
+        k_ce = 13.56*((D_i*self.eps_mf*self.ub/(self.db**3))**(1/2))
 
         # Solid vertical dispersion
-        Dsv = ((self.fcw**2)*self.eps_mf*self.fb*self.d_b_avg*(self.u_b_avg**2))/(3*self.u_mf)
+        Dsv = ((self.fcw[0]**2)*self.eps_mf*self.epsilon_bubble[0]*self.db[0]*(self.ub[0]**2))/(3*self.umf)
 
         return k_bc, k_ce, Dsv
 
@@ -446,10 +448,10 @@ class geldart_A_WGS:
 
         # Emulsion phase:
         f[:,10] = -self.Kce_CO2*self.a_bubble*(c[:,10]-c[:,5])*self.epsilon_cw + self.k_gs_CH4*self.a_gs*(c[:,15] - c[:,10])*self.epsilon_emulsion*self.gamma_emulsion # Methane 
-        f[:,11] = -self.Kce_H2O*self.a_bubble*(c[:,11]-c[:,6])*self.epsilon_cw  + self.k_gs_H2O*self.a_gs*(c[:,16] - c[:,11])*self.eps_emulsion*self.gamma_emulsion # Water
-        f[:,12] = -self.Kce_H2*self.a_bubble*(c[:,12]-c[:,7])*self.epsilon_cw + self.k_gs_H2*self.a_gs*(c[:,17] - c[:,12])*self.eps_emulsion*self.gamma_emulsion # Hydrogen
-        f[:,13] = -self.Kce_CO2*self.a_bubble*(c[:,13]-c[:,8])*self.epsilon_cw + self.k_gs_CO2*self.a_gs*(c[:,18] - c[:,13])*self.eps_emulsion*self.gamma_emulsion # Carbon dioxide 
-        f[:,14] = -self.Kce_CO*self.a_bubble*(c[:,14]-c[:,9])*self.epsilon_cw  + self.k_gs_CO*self.a_gs*(c[:,19] - c[:,14])*self.eps_emulsion*self.gamma_emulsion # Carbon Monoxide
+        f[:,11] = -self.Kce_H2O*self.a_bubble*(c[:,11]-c[:,6])*self.epsilon_cw  + self.k_gs_H2O*self.a_gs*(c[:,16] - c[:,11])*self.epsilon_emulsion*self.gamma_emulsion # Water
+        f[:,12] = -self.Kce_H2*self.a_bubble*(c[:,12]-c[:,7])*self.epsilon_cw + self.k_gs_H2*self.a_gs*(c[:,17] - c[:,12])*self.epsilon_emulsion*self.gamma_emulsion # Hydrogen
+        f[:,13] = -self.Kce_CO2*self.a_bubble*(c[:,13]-c[:,8])*self.epsilon_cw + self.k_gs_CO2*self.a_gs*(c[:,18] - c[:,13])*self.epsilon_emulsion*self.gamma_emulsion # Carbon dioxide 
+        f[:,14] = -self.Kce_CO*self.a_bubble*(c[:,14]-c[:,9])*self.epsilon_cw  + self.k_gs_CO*self.a_gs*(c[:,19] - c[:,14])*self.epsilon_emulsion*self.gamma_emulsion # Carbon Monoxide
 
         # Solid phase:
         f[:,15] = -self.k_gs_CH4*self.a_gs*(c[:,15] - c[:,10])*self.epsilon_emulsion*self.gamma_emulsion - self.k_gs_CH4*self.a_gs*(c[:,15] - c[:,5])*self.gamma_cw*self.epsilon_cw  #- self.r1_real # Methane 
@@ -490,7 +492,8 @@ class geldart_A_WGS:
         # # The following uses only a constant value for the phase velocities given by the following array: vel_coefficients
 
         # # Low u_mf value causes issues
-        self.u_mf = 1
+
+        self.u_mf = self.umf
         vel_coefficients = np.concatenate([np.ones(self.Nc)*self.ub[0], np.ones(self.Nc)*self.u_mf, np.ones(self.Nc)*self.u_mf, np.ones(self.Nc)*self.u_s,[1]])
 
         # self.ub[0],self.ue[0]
@@ -556,19 +559,22 @@ class geldart_A_WGS:
 
         # # Conversion 
         """ THIS DEFINITION TAKES INTO CONSIDERATION THE CO CONCENTRATION IN ALL THE PHASES"""
-        # self.Conversion_CO2 = (1 - (self.c[-1,4]*self.eps_bubble + self.c[-1,9]*self.eps_cw + self.c[-1,14]*self.eps_emulsion + self.c[-1,19]*self.eps_solids)/(self.C_CO2_in*self.eps_bubble)) 
+        # self.Conversion_CO2 = (1 - (self.c[-1,4]*self.epsilon_bubble[-1] + self.c[-1,9]*self.epsilon_cw[-1] + self.c[-1,14]*self.eps_emulsion[-1])/(self.C_CO2_in*self.epsilon_bubble[0])) 
         
         """ THIS DEFINITION TAKES INTO CONSIDERATION THE CO CONCENTRATION ONLY IN THE BUBBLE PHASE"""
-        self.Conversion_CO = (1 - (self.c[-1,4])/(self.C_CO_in))  
+        self.Conversion_CO = (1 - (self.c[-1,4]*self.epsilon_bubble[-1])/(self.C_CO_in*self.epsilon_bubble[0]))
+
+        # self.Conversion_CO = (1 - (self.c[-1,4]*self.epsilon_bubble[-1] + self.c[-1,9]*self.epsilon_emulsion[-1])/(self.C_CO_in*self.epsilon_bubble[0]))
+        
         # print(f'Conversion CO2 = {self.Conversion_CO2*100:.1f}%')
 
         self.pdrop = self.c[0,10] - self.c[-1,10]     
         # print(f'Pressure drop = {self.pdrop:.1f} bar')
 
         self.C_tot = (self.c[-1,0] + self.c[-1,1] + self.c[-1,2] + self.c[-1,3] + self.c[-1,4])
-        self.Fraction_CO2 = self.c[-1,3]/self.C_tot
+        self.Fraction_H2 = self.c[-1,2]/self.C_tot
         self.Fraction_CO = self.c[-1,4]/self.C_tot
-        return self.Conversion_CO, self.pdrop, self.Fraction_CO, self.Fraction_CO2 
+        return self.Conversion_CO, self.pdrop, self.Fraction_CO, self.Fraction_H2
     
     def plot(self):
         labels = ['$\mathrm{CH_4}$','$\mathrm{H_2O}$','$\mathrm{H_2}$','$\mathrm{CO_2}$','CO']

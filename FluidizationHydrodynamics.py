@@ -1,349 +1,260 @@
 import numpy as np 
-import scipy.sparse as sps 
-import pymrm as mrm  
-import matplotlib.pyplot as plt 
-import scipy.optimize as opt
-# from UmfClass import solve_umf
+from scipy.optimize import fsolve
 
-class FluidizationHydrodynamics:
-    def init(self, d_p, u0, nz, rho_s):
-        # Reactor properties
-        self.Tin = 298
-        self.P = 1*101325 
-        self.Lr = 1
-        self.Dr = 0.5 # 10/self.Lr # Based on John's suggestion for area
-        self.u0 = u0 # Superficial gas velocity at the inlet -> Check if interstitial velocity is relevant
-        self.epsilon_b = 0.4 # Minimum fluidization porosity (-) assumed to be the same for a packed bed reactor
-      
-        self.L = self.Lr # Length of the reactor
-        self.nz = nz # Number of grid points
-        self.z = np.linspace(0,self.L,self.nz)
+class Fluidization:
+    """
+    Class for modeling fluidization hydrodynamics in two-phase or three-phase fluidized bed reactors (FBRs).
+
+    Attributes:
+        Various physical and hydrodynamic properties of the reactor,
+        gas, and particle phases are initialized and used for calculations.
+    """
+    
+    def __init__(self, column_model=None):
+        print(f"\n... Initializing fluidization hydrodynamics")
 
         # Gas phase properties
-        self.mu_g = 1.825e-5 # Dynamic viscosity of Air at (298 K, 1 bar) (kg m-1 s-1)
-        self.rho_g = 1.204 # Density of air at (293.15 K, 1 atm) (kg m-3)
-        self.g = 9.81 # Gravitational acceleration (m^2/s)
-        self.R = 8.31 # Gas Constant J mol-1 K-1
+        self.g = 9.81 # Gravitational acceleration [m^2/s]
 
-        # Particle phase properties from (Low 2023)
-        self.d_p =  d_p # Lewatit VP OC 1065
-        self.rho_s = rho_s # 744 # Particle density (kg/m3)
-        self.epsilon_s = 0.338 # Particle porosity (-)
-        self.phi_p = 1 # Particle sphericity assumed to be 1 
-        self.tauw = 2 # Particle tortuosity
+        # Acces column model class
+        if not column_model:
+            raise Exception('No valid column model provided') 
+        else: 
+            self.cm = column_model
 
+        # Archimedes number and limits
+        self.geldart_limit()
+
+        # Calculate phase hold-up fractions
+        if self.cm.const_phase_frac:
+            self.constant_phase_fractions()
+        else:
+            raise Exception('varying phase fractions not implemented yet')
+        
+        # Calculate mass transfer coefficients
+        if self.cm.const_phase_frac:
+            self.calc_mass_tranf_coeffs_constant()
+
+        else:  
+            raise Exception('varying phase fractions not implemented yet')
+        
+    def geldart_limit(self):
+        """
+        Determine particle Geldart classification and calculate fluidization parameters.
+        
+        This method calculates the Archimedes number (Ar) to classify particle types based on 
+        Geldart's classification (A, B, or D), and determines key fluidization properties such as 
+        the minimum fluidization velocity, bed voidage at minimum fluidization, and terminal velocity.
+        
+        Raises:
+        -------
+        ValueError:
+            - If the particle type falls into Geldart's 'D' category.
+            - If the bed is not in the bubbling fluidization regime (u0 < u_mf).
+        """
+        print(f"\n... Calculating Geldart Limits")
         # Archimedes number
-        self.Ar = (self.g*self.rho_g*(self.rho_s - self.rho_g)*(self.d_p**3))/((self.mu_g)**2)
-
-        # Archimedes limits
-        self.Ar_AB = (1.03e6)*(((self.rho_g)/(self.rho_s - self.rho_g))**(1.275))
-        self.Ar_BD = (1.25e5)
+        self.Ar = (self.g * self.cm.rho_g_mix / self.cm.mu_g_mix ** 2) * (self.cm.rho_p - self.cm.rho_g_mix) * (self.cm.d_p ** 3)
+        
+        # Define Archimedes number limits for classification
+        self.Ar_AB = 1.03e6 * ((self.cm.rho_g_mix / (self.cm.rho_p - self.cm.rho_g_mix)) ** 1.275)
+        self.Ar_BD = 1.25e5
 
         if self.Ar <= self.Ar_AB :
-            self.particletype = 'Particle is Geldart A'
-            # print(self.Ar,'Particle is Geldart A type')
-
+            self.particletype = 'Geldart A'
+            print(f'Particle is {self.particletype}')
         elif self.Ar <= self.Ar_BD :
-            self.particletype = 'Particle is Geldart B'
-            # print(self.Ar,'Particle is Geldart B type')
-
+            self.particletype = 'Geldart B' 
+            print(f'Particle is {self.particletype}')
         else:
-            raise ValueError("Particle is D type. Check Lewatit properties.")
+            raise ValueError("Particle is Geldart D type. Check particle properties.")
 
-        # Fluidization regimes
-        self.Re = (self.rho_g*self.u0*self.d_p)/(self.mu_g)
-        # print(self.Re)
-
-        # Limits for bubbling fluidization (KL page 88-89)
-        self.Re_bub_low = np.exp(-3.218 + 0.274*np.log(self.Ar))
-        self.Re_bub_high = np.exp(-0.357 + 0.149*np.log(self.Ar))
-        # print(self.Re, self.Re_bub_low ,self.Re_bub_high)
-
-        # if self.Re >= self.Re_bub_high:
-        #     raise ValueError("Reactor is not in bubbling fluidization regime (Re > Re_high). Check flow rate/particle size.")
-        # elif self.Re <= self.Re_bub_low:
-        #     raise ValueError("Reactor is not in bubbling fluidization regime (Re < Re_low). Check flow rate/particle size.")
+        # Calculate fluidization regimes
+        self.Re = (self.cm.rho_g_mix * self.cm.v_sup * self.cm.d_p) / self.cm.mu_g_mix
         
         # Terminal particle velocity
-        self.Re_terminal = (self.Ar**(1/3))/(((18)/(self.Ar**(2/3))) + ((2.335 - 1.744*self.phi_p)/(self.Ar**(1/6))))
-        self.u_t = self.Re_terminal*self.mu_g/(self.d_p*self.rho_g)
-
-        # Bed voidage at minimum fluidization
-        self.T = 293.15 # Move to reactor properties after
-        self.T0 = 298
-        self.epsilon_mf = 0.382*(((self.Ar**(-0.196))*((self.rho_s/self.rho_g)**(-0.143))) + 1)*((self.T/self.T0)**(0.083))
-        #[self.Re_mf, self.u_mf] = solve_umf(self.d_p)
-        self.Re_mf = 33.7*(np.sqrt(1 + 3.6*(1e-5)*self.Ar) - 1) #np.sqrt((33.7**2 + 0.408*self.Ar)) - 37 # From KL
-        self.u_mf = (self.Re_mf*self.mu_g)/(self.rho_g*self.d_p) # 0.0126 # 
-        self.d_h = self.Dr # Hydraulic diameter of the column
-
-        # The following are two options for the bubble diameter correlation
-
-        """ OPTION 1"""
-        # The following is the correlation from Cai et al. obtained from KL 
-        # Porous plate
-        self.db0_porous = (3.67 * 10**(-3)) * (self.u0 - self.u_mf)**2
-
-        # Perforated plate
-        Ac = 55e-6 # Size of the perforated holes from KL
-        nd = 10
-        self.db0_perforated = 0.347 * ((Ac * (self.u0 - self.u_mf) / nd) ** 0.4)
-
-        self.d_b_func_1 = 0.138*(self.z**0.8)*((self.u0 - self.u_mf)**0.42)*np.exp(((self.u0 - self.u_mf)**2)*(-0.25/(10**5)) - ((self.u0 - self.u_mf)/(10**3)))
-        # print(db0_porous,db0_perforated)
-        # CHANGED DB0_POROUS TO 0.005
-        self.d_b = np.maximum(self.d_b_func_1, 0.005)
-
-
-        """ OPTION 2"""
-        # self.d_b_max = np.minimum(1.638*(((np.pi/4)*(self.d_h**2)*(self.u0 - self.u_mf))**(0.4)),self.d_h)
-        # self.d_b0 = 0.376*((self.u0 - self.u_mf)**2)
-        # self.d_b = self.d_b_max - (self.d_b_max - self.d_b0)*np.exp((-0.3*self.z)/(self.R*self.T)) # Mean bubble diameter from Mori & Wen KL
-
-        # Bubble rise velocity
-        self.u_br = np.zeros_like(self.d_b)
-
-        for i in range(np.size(self.d_b)):
-            if (self.d_b[i]/self.d_h) <= 0.125:
-                self.u_br[i] = 0.711*(np.sqrt(self.g*self.d_b[i]))
-
-            elif (self.d_b[i]/self.d_h) <= 0.6:
-                self.u_br[i] = 0.8532*(np.sqrt(self.g*self.d_b[i]))*(np.exp(-1.49*(self.d_b[i]/self.d_h)))
-            
-            elif (self.d_b[i]/self.d_h) >= 0.6:
-                self.u_br[i] = 0.35*(np.sqrt(self.g*self.d_b[i]))
-
-            else:
-                raise ValueError("The bubble to hydraulic diameter ratio is out of correlation bounds. This corresponds to less than 0.125 or more than 0.6. Check column dimensions.")
-
-        # Bubble velocity
-        # # First option specific for different types
-        if self.particletype == 'Particle is Geldart A':
-            self.u_b_1= 1.55*((self.Dr)**(0.32))*((self.u0 - self.u_mf) + 14.1*(self.d_b + 0.005))+ self.u_br # For Geldart A
-        elif self.particletype == 'Particle is Geldart B':
-            self.u_b_1 = 1.6*((self.Dr)**(1.35))*((self.u0 - self.u_mf) + 1.13*(self.d_b**(0.5))) + self.u_br # For Geldart B
-
-        # Second option is a general equation for both Geldart A and Geldart B
-        self.u_b = self.u0 - self.u_mf + self.u_br # 
-
-        ## Maxwell-Stefan constants
-        #Molecular weights 
-        self.M_CO2 = 44  # 1 
-        self.M_CO = 2    # 2
-        self.M_H2O = 32  # 3
-        self.M_H2 = 39.95  # 4
-
-        #Diffusion volumes
-        self.V_CO2 = 26.7 
-        self.V_CO = 6.12
-        self.V_H2O = 16.3 
-        self.V_H2 = 16.2
-
-        self.Dm_CO2, self.Dm_CO, self.Dm_H2O, self.Dm_H2 = self.calculate_average_diffusion_coefficients(self.Tin, self.P)
+        self.phi_sph = 1                                         
+        self.u_t_star = 1 / ((18 / (self.Ar ** (2 / 3))) + ((2.335 - 1.744 * self.phi_sph) / (self.Ar ** (1 / 6))))
+        self.u_t_KL = self.u_t_star * ((self.g * self.cm.mu_g_mix * (self.cm.rho_p - self.cm.rho_g_mix) / (self.cm.rho_g_mix ** 2)) ** (1 / 3))
         
-        self.kgs = self.k_gas_to_solid(correlation='Gunn')
-
-        # self.Darray = np.array([self.Dm_CO2, self.Dm_N2, self.Dm_O2, self.Dm_Ar]) 
-        self.Darray = np.array([self.Dm_CO2, self.Dm_CO, self.Dm_H2O, self.Dm_H2])
+        # Terminal velocity based on correlation
+        self.Re_terminal = (self.Ar ** (1 / 3)) / (((18 / (self.Ar ** (2 / 3))) + ((2.335 - 1.744 * self.phi_sph) / (self.Ar ** (1 / 6)))))
+        self.u_t = self.Re_terminal * self.cm.mu_g_mix / (self.cm.d_p * self.cm.rho_g_mix)
+        print(f'Terminal velocity {self.u_t.item():0.2f} m/s')
         
-        self.Kbc = np.zeros([self.nz, np.size(self.Darray)])
-        self.Kce = np.zeros([self.nz, np.size(self.Darray)])
-        self.Kov = np.zeros([self.nz, np.size(self.Darray)])
-        self.Kbe = np.zeros([self.nz, np.size(self.Darray)])
+        # Calculate bed voidage and minimum fluidization velocity 
+        self.eps_mf = 0.586 * (self.Ar ** -0.029) * (self.cm.rho_g_mix / self.cm.rho_p) ** 0.021
+        self.u_mf = self.cm.mu_g_mix / self.cm.rho_g_mix / self.cm.d_p * ( np.sqrt(27.2**2 + 0.0408 * self.Ar) - 27.2)  # Minimum fluidization vel. [m/s]
 
-        # Fix for index -> 4 initial indexes for Kbe, Kbc, Kce, Kov
-        self.kgas = np.zeros([4,self.nz, np.size(self.Darray)])
+        print(f'Minimum fluidization velocity {self.u_mf.item():0.4f} m/s')
+        print(f'Bed porosity at minimum fluidization {self.eps_mf.item():0.3f}')
 
-        for i in range(np.size(self.Darray)):
-
-            if self.particletype == 'Particle is Geldart A':
-                self.Kbc[:,i] = 4.5*(self.u_mf/self.d_b[:]) + 5.85*(((self.Darray[i]**(1/2))*(self.g**(1/4)))/(self.d_b[:]**(5/4)))
-
-                ## THE FACTOR 6.77 IS 13.56 IN ANOTHER CORRELATION
-                self.Kce[:,i] = 6.77*((self.Darray[i]*self.epsilon_mf*self.u_br[:]/(self.d_b[:]**3))**(1/2))
-
-            elif  self.particletype == 'Particle is Geldart B':
-                self.Kbe[:,i] = np.sqrt((self.Darray[i]*self.u_b[:]*4)/(self.d_b[:]*np.pi)) + self.u_mf/3 # Correlation for a 2 phase Bubble to Emulsion model from ACRE exam
-
-                # Using a combination and an overall transfer term
-                self.Kbc[:,i] = 4.5*(self.u_mf/self.d_b[:]) + 5.85*(((self.Darray[i]**(1/2))*(self.g**(1/4)))/(self.d_b[:]**(5/4)))
-                self.Kce[:,i] = 6.77*((self.Darray[i]*self.epsilon_mf*self.u_br[:]/(self.d_b[:]**3))**(1/2))
-                self.Kov[:,i] = 1/((1/self.Kbc[:,i]) + (1/self.Kce[:,i]))
-            else:
-                raise ValueError("Paricle is D or C type. Spouting and jet formation is undesired, therefore, check Lewatit CP 1065 properties.")
-            
-        if self.particletype == 'Particle is Geldart A':
-            # self.kgas = np.array([self.Kbc, self.Kce])
-            self.kgas[0,:,:] = self.Kbc[:,:]
-            self.kgas[1,:,:] = self.Kce[:,:]
-        elif self.particletype == 'Particle is Geldart B':
-            self.kgas[0,:,:] = self.Kbc[:,:]
-            self.kgas[1,:,:] = self.Kce[:,:]
-            self.kgas[2,:,:] = self.Kbe[:,:]
-            self.kgas[3,:,:] = self.Kov[:,:]
-       
-        self.u_f = self.u_mf/self.epsilon_mf # Interstitial gas velocity at minimum fluidization
-
-        self.fb = np.zeros_like(self.u_b)
-        self.fb_2 = np.zeros_like(self.u_b_1)
-
-        # Bubble phase fraction
-        for i in range(np.size(self.u_b)):
-            if (self.u_b[i]/self.u_f) <= 1:
-                self.psi = 2
-
-            elif (self.u_b[i]/self.u_f) == 1:
-                self.psi = 1
-            
-            elif (self.u_b[i]/self.u_f) <= 5:
-                self.psi = 0
-
-            elif (self.u_b[i]/self.u_f) >= 5:
-                self.psi = -1
-
-            else:
-                raise ValueError("The bubble to emulsion velocity ratio is out of correlation bounds. Check superficial (self.u0) and minimum fluidization velocity (self.u_mf)")
+        # Check if the bed is in the bubbling fluidization regime
+        if (self.cm.v_sup - self.u_mf) <= 0:
+            raise ValueError('The velocity is below the minimum fluidization value. The bed is not in the bubbling fluidization regime.')
         
-            self.fb[i] = (self.u0 - self.u_mf)/(self.u_b[i] + self.psi*self.u_mf)
-
-        # Bubble phase fraction # Second option specific for Geldart A or B
-        for i in range(np.size(self.u_b_1)):
-            if (self.u_b_1[i]/self.u_f) <= 1:
-                self.psi = 2
-
-            elif (self.u_b_1[i]/self.u_f) == 1:
-                self.psi = 1
-            
-            elif (self.u_b_1[i]/self.u_f) <= 5:
-                self.psi = 0
-
-            elif (self.u_b_1[i]/self.u_f) >= 5:
-                self.psi = -1
-
-            else:
-                raise ValueError("The bubble to emulsion velocity ratio is out of correlation bounds. Check superficial (self.u0) and minimum fluidization velocity (self.u_mf)")
-        
-            self.fb_2[i] = (self.u0 - self.u_mf)/(self.u_b_1[i] + self.psi*self.u_mf)
-
-        if self.particletype == 'Particle is Geldart A':
-            # Wake fraction inside of Bubble
-            self.alpha_w = 1 - np.exp(-4.92*self.d_b) # From Medrano
-            self.fw = self.alpha_w*self.fb
-            self.fc = 3/((self.u_br*self.epsilon_mf - self.u_mf)/self.u_mf) # From K&L
-
-            # CW fraction
-            self.epsilon_cloud_wake = (self.fc + self.fw)*self.fb
-
-             # Emulsion fraction 
-            self.femulsion = (1 - self.fb - self.fw)/self.fb #  - self.fb*self.fc  - self.fb*self.fw This equation was obtained from Medrano
-            # self.femulsion2 = (1 - self.fb - (self.fb*self.fc*self.fb*self.fw))/self.fb # This equation was obtained from K&L
-            self.epsilon_emulsion = self.femulsion*self.fb # To obtain units per m3 of reactor volume
-        
-            # Alternative to emulsion phase velocity from KL
-            self.us_wake = self.u_b
-            self.us_down = (self.fw*self.fb*self.u_b)/(1 - self.fb - self.fb*self.fw) 
-
-            # self.u_emulsion2 = ((self.u_mf)/(self.epsilon_mf)) - self.us_down # from K&L
-            self.u_emulsion = (self.u0 - (((self.fb) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
-
-            # Solid phase fractions per unit of bubble volume
-            self.gamma_b = 0.005
-            self.gamma_cw = (1 - self.epsilon_mf)*(self.fc + self.fw) # This one is from KL the alternative is the following (1 - self.epsilon_mf)*(self.fc + 0.5) 
-            self.gamma_e = (1 - self.epsilon_mf)*((1 - self.fb)/self.fb) - self.gamma_b - self.gamma_cw
-
-            self.epsilon_solids = self.gamma_b*self.fb + self.gamma_cw*self.epsilon_cloud_wake + self.gamma_e*self.epsilon_emulsion
-
-        elif self.particletype == 'Particle is Geldart B':
-            self.femulsion = (1 - self.fb)/self.fb # This equation was obtained from Medrano
-            self.epsilon_emulsion = self.femulsion*self.fb # To obtain units per m3 of reactor volume
-
-            # Solid phase fractions per unit of bubble volume
-            self.gamma_b = 0.005 # Assumed value based on Medrano
-            self.gamma_e = (1 - self.epsilon_mf)*((1 - self.fb)/self.fb) - self.gamma_b
-            self.epsilon_solids = self.gamma_b*self.fb + self.gamma_e*self.epsilon_emulsion
-
-            self.u_emulsion = (self.u0 - ((self.fb*self.u_b)))/(self.femulsion*self.epsilon_mf)
-            self.us_down = self.u_emulsion
-            self.fw = np.zeros(self.nz) # No wake
-            self.fc = np.zeros(self.nz) # No cloud
-            
-        else:
-            raise ValueError('Check particle specifications. Geldart type is out of bounds')
-        
-        # Cloud fraction 
-        # There are two correlations for the cloud fraction per bubble volume. The following is from Medrano et al.
-        # self.RcRb = np.minimum(np.maximum(((self.u_br + 2*self.u_f)/(self.u_br - self.u_f)), 0), 1 - self.fb - self.fw)
-        # self.alpha_c = (self.RcRb)**3 - 1
-        # self.fc = self.alpha_c*self.fb # From Medrano et. al
-        # print(self.RcRb, self.alpha_c)
-
-        # Emulsion phase velocity from Martin
-        # self.u_emulsion = (self.u0 - (((self.fb*(1 - self.epsilon_s)) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
-        # Emulsion phase velocity from Medrano
-        # self.u_emulsion = (self.u0 - (((self.fb) + (self.fw*self.epsilon_mf))*self.u_b))/(self.femulsion*self.epsilon_mf)
-        # print(self.u_emulsion, self.u_emulsion2)
-
-        # Solid axial dispersion from KL
-        self.Dsv = ((self.fw**2)*self.epsilon_mf*self.fb*self.d_b*(self.u_b**2))/(3*self.u_mf)
-        self.alpha = 0.77 # 1 # for fine Geldart A and AB solids from KL
-        self.Dsh = (3*self.fb*self.u_mf*self.d_b*(self.alpha))/(16*(1 - self.fb)*self.epsilon_mf)
-
-
-    def fuller(self, T, M1, M2, V1, V2, P):
-        D_ij = 1.013e-2 * T**1.75 / P * np.sqrt(1/M1 + 1/M2) / (V1**(1/3) + V2**(1/3))**2
-        return D_ij
-
-    def calculate_average_diffusion_coefficients(self, T, P):
-        # Define the molecules and their properties
-        molecules = [
-            ('CO2', self.M_CO2, self.V_CO2),
-            ('CO', self.M_CO, self.V_CO),
-            ('H2O', self.M_H2O, self.V_H2O),
-            ('H2', self.M_H2, self.V_H2)
-        ]
-        
-        # Calculate diffusion coefficients for each molecule with every other molecule
-        diffusion_coeffs = {mol[0]: [] for mol in molecules}
-        
-        for i, (name1, M1, V1) in enumerate(molecules):
-            for j, (name2, M2, V2) in enumerate(molecules):
-                if i != j:
-                    diffusion_coeff = self.fuller(T, M1, M2, V1, V2, P)*self.epsilon_s/self.tauw
-                    diffusion_coeffs[name1].append(diffusion_coeff)
-        
-        # Calculate average diffusion coefficient for each molecule
-        avg_diffusion_coeffs = {name: np.mean(coeffs) for name, coeffs in diffusion_coeffs.items()}
-        # print(f"Average Diffusion Coefficients: {avg_diffusion_coeffs}")
-        
-        return avg_diffusion_coeffs['CO2'], avg_diffusion_coeffs['CO'], avg_diffusion_coeffs['H2O'], avg_diffusion_coeffs['H2']
-
+        # Calculate hydraulic diameter of the column
+        self.d_hyd = self.cm.R_b * 2
     
-    def k_gas_to_solid(self, correlation='Gunn'):
-        pairs = [(self.M_CO2, self.M_H2, self.V_CO2, self.V_H2),    # 12
-                    (self.M_CO2, self.M_CO, self.V_CO2, self.V_CO),    # 13
-                    (self.M_CO2, self.M_H2O, self.V_CO2, self.V_H2O),  # 14
-                    (self.M_H2, self.M_CO, self.V_H2, self.V_CO),      # 23
-                    (self.M_H2, self.M_H2O, self.V_H2, self.V_H2O),    # 24
-                    (self.M_CO, self.M_H2O, self.V_CO, self.V_H2O)]    # 34
-        k_gs = []
+    def constant_phase_fractions(self):
+        """
+        Calculate phase and solid fractions in a three-phase fluidized bed model.
         
-        for M_i, M_j, V_i, V_j in pairs:
-            D_ij = self.fuller(self.T,M_i, M_j, V_i, V_j,self.P)
+        Determines bed height, bubble velocity and diameter, and phase fractions 
+        (bubble, cloud, and emulsion) based on fluidization conditions.
+        """
+        print(f"\n... Calculating constant phase fractions")
 
-            # Calculate Reynolds number
-            Re = self.rho_g * self.u0 * self.d_p / self.mu_g
+        # Solve for final bed height
+        self.solve_H_final()
+        print(f'Bed final height: {self.H_f.item():0.2f} m')
+        
+        # Average values taken at mid-column height
+        self.d_b_avg = self.d_b_max - (self.d_b_max - self.d_b0) * np.exp(-0.3 * self.H_f/2 / (self.cm.R_b * 2))
+        self.u_b_avg = self.cm.v_sup - self.u_mf + 0.711 * np.sqrt(self.g * self.d_b_avg)
+        print(f'Average bubble velocity: {self.u_b_avg.item():0.3f} m/s')
 
-            # Calculate Schmidt number
-            Sc = self.mu_g / (self.rho_g * D_ij)
+        if self.cm.model_type == 'Two-Phase Model':
+            # Calculate phase fractions   [m3phase/m3reactor]
+            self.alpha_w = 1 - np.exp(-4.92*self.d_b_avg)    
 
-            if correlation == 'Ranz-Marshall':
-                k_mt = D_ij / self.d_p * (2 + 0.06 * Re**0.5 * Sc**(1/3))
-            elif correlation == 'Gunn':
-                k_mt = D_ij / self.d_p * ((7 - 10 * self.epsilon_b + 5 * self.epsilon_b**2) * (1 + 0.7 * Re**0.2 * Sc**0.33) + (1.33 - 2.4 * self.epsilon_b + 1.2 * self.epsilon_b**2) * Re**0.7 * Sc**0.33)
-            else:
-                raise ValueError("Use 'Ranz-Marshall' or 'Gunn'.")
+            self.f_b = (self.cm.v_sup - self.u_mf) / self.u_b_avg  
+            self.f_w = self.alpha_w * self.f_b
+            self.f_e = 1 - self.f_b - self.f_w  
+            
+            print(f'Bubble fraction respect to reactor volume: {100*self.f_b.item():0.2f} %')
+            print(f'Wake fraction respect to reactor volume: {100*self.f_w.item():0.2f} %')
+            print(f'Emulsion fraction respect to reactor volume: {100*self.f_e.item():0.2f} %')
 
-            k_gs.append(k_mt)
+            # Gas fraction per unit of reactor
+            self.gamma_bw_gas = self.f_b + self.f_w * self.eps_mf                     # [gas in the bubble + wake]
+            self.gamma_e_gas = self.f_e * self.eps_mf                                 # [gas in the emulsion]
 
-        return k_gs
+            print(f'Gas in bubble + wake respect to reactor volume: {self.gamma_bw_gas.item():0.3f}')
+            print(f'Gas in emuslion respect to reactor volume: {self.gamma_e_gas.item():0.3f}')
+
+            # Solid fraction per unit of reactor
+            self.gamma_w_solid = self.f_w * (1 - self.eps_mf)
+            self.gamma_e_solid = self.f_e * (1 - self.eps_mf)
+
+            print(f'Solid in wake  respect to reactor volume: {self.gamma_w_solid.item():0.3f}')
+            print(f'Solid in emulsion  respect to reactor volume: {self.gamma_e_solid.item():0.3f}')
+
+            # Gas and solid phase velocities
+            self.u_ge = (self.cm.v_sup - ( self.f_b + self.f_w * (self.eps_mf)) * self.u_b_avg)/((1 -  self.f_b -  self.f_w) * (self.eps_mf))
+
+            self.u_se =  - self.f_w * (1 - self.eps_mf) * self.u_b_avg /((1 -  self.f_b -  self.f_w) * (1 - self.eps_mf))
+            
+            print(f'Gas emulsion velocity: {self.u_ge.item():0.3f} m/s')
+            print(f'Solid emulsion velocity: {self.u_se.item():0.3f} m/s')
+
+    def solve_H_final(self):
+        """
+        Calculate the final bed height (H_final) in a fluidized bed model.
+        
+        This method estimates `H_final` by solving a non-linear equation for the average bubble
+        diameter and velocity at mid-height of the bed, using an iterative approach. The maximum 
+        bubble diameter (`d_b_max`) and initial bubble parameters (`d_b0`, `u_b_0`) are calculated 
+        based on input fluid and bed properties.
+        
+        Returns:
+        --------
+        float
+            Final bed height, H_final [m].
+        """
+        self.cm.A_in = np.pi * (self.cm.R_b**2)
+        
+        # Height at minimum fluidization [m]
+        self.H_mf = self.cm.L_b * (1 - 0.4) / (1 - self.eps_mf)
+        print(f'Height at minimum fluidization {self.H_mf.item():0.2f} m')
+        
+        # Maximum bubble diameter [m], limited by the column diameter
+        self.d_b_max = np.minimum((0.65 * (self.cm.A_in * (self.cm.v_sup - self.u_mf))**0.4), self.cm.R_b * 2)
+
+        # Initial bubble diameter at porous distributor and bubble initial velocity
+        self.d_b0 = 0.376 * (self.cm.v_sup - self.u_mf) ** 2
+        print(f'Bubble initial diameter {self.d_b0.item():0.5f} m')
+        print(f'Bubble max diameter: {self.d_b_max.item():0.5f} m')
+
+        self.u_b_0 = self.cm.v_sup - self.u_mf + 0.711 * np.sqrt(self.g * self.d_b0)
+        print(f'Bubble initial velocity {self.u_b_0.item():0.2f} m/s')
+
+        # Function to solve for H_final
+        def f(H_f):
+                # Average bubble swarm diameter and velocity as function of H final 
+                d_b_avg = self.d_b_max - (self.d_b_max - self.d_b0) * np.exp(-0.3 * H_f/2 /(self.cm.R_b * 2))
+                u_b_avg = self.cm.v_sup - self.u_mf + 0.711 * np.sqrt(self.g * d_b_avg)
+
+                c1 = 1 - (self.u_b_0 / u_b_avg) * np.exp(-0.275 / (self.cm.R_b * 2))
+                c2 = ((self.cm.v_sup - self.u_mf) / u_b_avg) * (1 - np.exp(-0.275 / (self.cm.R_b * 2)))
+
+                # Equation to solve: f(H) = 0
+                return H_f - self.H_mf * (c1 / (c1 - c2))
+
+        # Solve for H_final using an initial guess based on minimum fluidization height
+        H_initial_guess = self.H_mf
+        self.H_f = fsolve(f, H_initial_guess)[0]
+            
+    def calc_mass_tranf_coeffs_constant(self):
+        """
+        Calculate mass transfer coefficients for a three-phase fluidized bed reactor (FBR).
+        
+        Computes component-wise mass transfer coefficients (K_bc, K_ce) and stores them in `self.k_gas`
+        for each component in `self.Darray`. The results are stored in a matrix where each row
+        corresponds to different mass transfer coefficients: Kbe, Kbc, Kce, and Kov.
+        """
+        print(f"\n... Calculating constant mass transfer coefficients")
+
+        # Initialize arrays to store mass transfer coefficients for each component
+        num_components = np.size(self.cm.D_m)
+        self.K_be = np.zeros(num_components)
+        self.K_we = np.zeros(num_components)
+
+        # Matrix to store all mass transfer coefficients (rows: [Kbe, Kbc, Kce, Kov])
+        self.k_gas = np.zeros((4, num_components))
+        
+        # Loop over each component to calculate mass transfer coefficients
+        for i in range(num_components):
+            if self.cm.model_type == 'Two-Phase Model':
+                # Bubble to emulsion mass transfer
+                if self.cm.mass_transf_corr == 'Medrano':
+                    self.K_be[i] = (4*2.6*self.cm.v_sup)/(np.pi*self.d_b_avg) 
+                if self.cm.mass_transf_corr == 'Grace':
+                    self.K_be[i]  == 1.5*(self.u_mf/self.d_b_avg) + 12*(((self.cm.D_m[i]*self.eps_mf*self.u_b_avg)/(self.d_b_avg**3))**(1/2))
+                if self.cm.mass_transf_corr == 'Xie':
+                    self.K_be[i] = np.sqrt(self.u_b_avg*(self.d_b_avg**(1.7)))*0.492*self.eps_mf # Xie correlation for 3D columns
+                if self.cm.mass_transf_corr == 'Chiba':
+                    alpha = 1 - np.exp(-4.92*self.d_b_avg)
+                    self.fw = alpha*self.epsilon_b
+                    self.K_be[i]  = (6.78/(1 - self.fw))*(((self.cm.D_m[i]*self.eps_mf*self.eps_mf*self.u_b_avg)/(self.d_b_avg**3))**(1/2))
+                if self.cm.mass_transf_corr == 'Hernandez-Jimenez':
+                    self.K_be[i] = (9*self.cm.v_sup)/(4*self.d_b_avg) # Correlation for a 2 phase Bubble to Emulsion model from ACRE exam
+                if self.cm.mass_transf_corr == 'K&L':
+                    # Using a combination and an overall transfer term
+                    Kbc_KL= 4.5*(self.u_mf/self.d_b_avg) + 5.85*(((self.cm.D_m[i]**(1/2))*(self.g**(1/4)))/(self.d_b_avg**(5/4)))
+                    Kce_KL= 6.77 * ((self.cm.D_m[i] * self.eps_mf * (0.711 * np.sqrt(self.g * self.d_b_avg) ) / (self.d_b_avg**3))**0.5)
+                    self.K_be[i] = 1/((1/Kbc_KL) + (1/Kce_KL))
+                
+                # Wake to emulsion mass transfer
+                if (self.cm.v_sup/self.u_mf) <= 3:
+                    self.K_we[0] = (0.075 * (self.cm.v_sup - self.u_mf)) / (self.d_b_avg * self.u_mf)
+                elif (self.cm.v_sup/self.u_mf) > 3:
+                    self.K_we[0] = 0.15 / self.d_b_avg
+
+        # Store K_bc and K_ce in the corresponding rows of k_gas
+        self.k_gas = self.K_be  
+        self.k_solid = self.K_we
+
+        component_names = ["CO2"] 
+
+        # Print Kbc, Kce, and Kov for each component
+        print("Mass transfer coefficients (1/s) for each component:")
+        for i, name in enumerate(component_names):
+            print(
+                f"{name}: "
+                f"Kbe = {self.K_be[i]:0.2f}, "
+                f"Kwe = {self.K_we[i]:0.2f}, "
+            )
+
+
     
